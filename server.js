@@ -1,4 +1,4 @@
-﻿﻿const express = require('express');
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿const express = require('express');
 const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -19,30 +19,26 @@ const io = new Server(server, { cors: { origin: "*" } });
 app.use(cors());
 app.use(express.json());
 
-// Servir os arquivos estáticos da pasta 'site'
+// Servir arquivos estáticos da pasta 'site'
 app.use(express.static(path.join(__dirname, 'site')));
 
-// Servir os arquivos estáticos da pasta 'paynel'
-app.use('/paynel', express.static(path.join(__dirname, 'paynel')));
-
-
 // CONFIGURAÇÃO SUPABASE (Credenciais do RICO INVESTIMENTO)
-const SUPABASE_URL = 'https://mgwxtbxgxozxicmipadr.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_cAFfrLoGx4MbG0J3IXwINw_f6NOuPkQ';
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://mgwxtbxgxozxicmipadr.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_cAFfrLoGx4MbG0J3IXwINw_f6NOuPkQ';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // CONFIGURACOES DE DEPOSITO
-const DEPOSITO_API_KEY = '32y3103KsiiaoL57dt38blJ1TWKxeDrUYucBeraKgI47hr2RbsJBOsJEtScy590203';
+const DEPOSITO_API_KEY = process.env.DEPOSITO_API_KEY || '32y3103KsiiaoL57dt38blJ1TWKxeDrUYucBeraKgI47hr2RbsJBOsJEtScy590203';
 const DEPOSITO_DESTINO_NUMERO = '926240472';
 const DEPOSITO_DESTINO_IBAN = '';
-const DEPOSITO_TAXA_KZ = 850;
+const DEPOSITO_TAXA_KZ = 1;
 const DEPOSITO_SUDO_URL = 'https://comprovativos.sudomakes.com/validar/';
 const DEPOSITO_MAX_FILE_MB = 10;
 const DEPOSITO_TIMEOUT_MS = 25000;
 
 const SMS_API_URL = 'https://smsapi.sudomakes.com/api/enviar-sms';
-const SMS_API_KEY = 'hEc65zq9ipXOJeprFj4zMeW+OCiWAWohyoqSPeBqJX17ZD4Xgw8UGQiG5I5Dcs4G';
-const ADMIN_PASSWORD = '123';
+const SMS_API_KEY = process.env.SMS_API_KEY || 'hEc65zq9ipXOJeprFj4zMeW+OCiWAWohyoqSPeBqJX17ZD4Xgw8UGQiG5I5Dcs4G';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '123';
 
 function toNumberSafe(value, fallback = 0) {
     const n = Number(value);
@@ -189,11 +185,14 @@ function tipoTransacao(tx, userId) {
     const destinatarioNome = String(tx.destinatario_nome || '').toLowerCase();
     const valor = toNumberSafe(tx.valor);
 
-    if (remetenteNome.includes('deposito')) return 'deposito';
+    // Prioridade para identificação de sistema e suporte
+    if (remetenteNome.includes('deposito') || remetenteNome.includes('suporte')) return 'deposito';
     if (remetenteNome.includes('ganho do investimento')) return 'ganho';
     if (remetenteNome.includes('cancelamento de investimento')) return 'cancelamento_investimento';
-    if (destinatarioNome.includes('investimento') || remetenteNome === 'sistema') return 'investimento';
+    if (remetenteNome.includes('bônus')) return 'bonus';
+    if (destinatarioNome.includes('investimento') || remetenteNome.includes('investimento')) return 'investimento';
 
+    // Identificação de transferências P2P
     if (Number(tx.remetente_id) === Number(userId)) return 'enviado';
     if (Number(tx.destinatario_id) === Number(userId)) return 'recebido';
     return valor >= 0 ? 'recebido' : 'enviado';
@@ -254,7 +253,7 @@ function extrairTransferenciaId(data, respostaTexto) {
     if (id) return String(id);
 
     if (respostaTexto) {
-        const match = respostaTexto.match(/(ID|REF|TRANSACAO)[^0-9]*([0-9]{6,})/i);
+        const match = respostaTexto.match(/(ID|REF|TRANSACAO|TRANSAC)[^0-9]*([0-9]{6,})/i);
         if (match && match[2]) {
             return String(match[2]);
         }
@@ -279,6 +278,62 @@ function extrairValorComprovativo(data, respostaTexto) {
     }
 
     return numero;
+}
+
+function extrairDataComprovativo(data, respostaTexto) {
+    const chavesData = ['DATA', 'DATE', 'DATA_TRANSACAO', 'DATA_EMISSAO', 'DATA_VALOR', 'DATA_OPERACAO', 'DATA_HORA', 'DATA - HORA'];
+    let dataTexto = String(obterValorChave(data, chavesData) || '');
+
+    // Unificamos o texto para busca (JSON + Texto Bruto)
+    const textoParaBusca = (dataTexto + " " + (respostaTexto || ""));
+
+    // 1. Procura Formato ISO: 2026-04-12 (Padrão Multicaixa Express)
+    const matchISO = textoParaBusca.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+    if (matchISO) {
+        const ano = parseInt(matchISO[1]);
+        const mes = parseInt(matchISO[2]) - 1;
+        const dia = parseInt(matchISO[3]);
+        return new Date(ano, mes, dia);
+    }
+
+    // 2. Procura Formato PT: 12/04/2026
+    const matchLong = textoParaBusca.match(/(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+    if (matchLong) {
+        const dia = parseInt(matchLong[1]);
+        const mes = parseInt(matchLong[2]) - 1;
+        const ano = parseInt(matchLong[3]);
+        return new Date(ano, mes, dia);
+    }
+
+    // 3. Procura Formato Curto: 12/04/26
+    const matchShort = textoParaBusca.match(/(\d{1,2})[-/.](\d{1,2})[-/.](\d{2})\b/);
+    if (matchShort) {
+        const dia = parseInt(matchShort[1]);
+        const mes = parseInt(matchShort[2]) - 1;
+        let ano = parseInt(matchShort[3]);
+        ano = ano < 50 ? 2000 + ano : 1900 + ano;
+        return new Date(ano, mes, dia);
+    }
+
+    if (dataTexto && dataTexto.length > 5) {
+        const d = new Date(dataTexto);
+        if (!isNaN(d.getTime())) return d;
+    }
+
+    return null;
+}
+
+function isDataHojeOuFuturo(dataComprovativo) {
+    if (!dataComprovativo) return false;
+
+    // Data atual em Angola
+    const hoje = new Date(new Date().toLocaleString("en-US", {timeZone: "Africa/Luanda"}));
+    hoje.setHours(0, 0, 0, 0);
+
+    const dataComp = new Date(dataComprovativo);
+    dataComp.setHours(0, 0, 0, 0);
+
+    return dataComp.getTime() >= hoje.getTime();
 }
 
 function validarDestinoComprovativo(respostaTexto) {
@@ -379,7 +434,16 @@ app.post('/depositos/validar', depositoUpload.single('comprovativo'), async (req
         return res.status(400).json({ success: false, error: 'Valor invalido no comprovativo.' });
     }
 
-    const valorUsd = Number((valorKz / DEPOSITO_TAXA_KZ).toFixed(2));
+    const dataTransacao = extrairDataComprovativo(data, respostaTexto);
+    if (!dataTransacao) {
+        return res.status(400).json({ success: false, error: 'Nao foi possivel identificar a data da transferencia.' });
+    }
+
+    if (!isDataHojeOuFuturo(dataTransacao)) {
+        return res.status(400).json({ success: false, error: 'Comprovativo rejeitado: A transferencia deve ser do dia de hoje.' });
+    }
+
+    const valorUsd = valorKz;
 
     try {
         const { data: user, error: userErr } = await supabase
@@ -413,16 +477,16 @@ app.post('/depositos/validar', depositoUpload.single('comprovativo'), async (req
         }
 
         await supabase.from('depositos').insert({
-            user_id: userIdNum, transferencia_id: transferenciaId, valor_kz: valorKz, valor_usd: valorUsd,
+            user_id: userIdNum, transferencia_id: transferenciaId, valor_kz: valorKz, valor_usd: valorKz,
             destino_tipo: destino.tipo, destino_valor: destino.valor, detalhes: data
         });
 
-        const novoSaldo = arredondar2(toNumberSafe(user.saldo_usd) + valorUsd);
+        const novoSaldo = arredondar2(toNumberSafe(user.saldo_usd) + valorKz);
         await supabase.from('usuarios').update({ saldo_usd: novoSaldo }).eq('id', userIdNum);
 
         await supabase.from('transacoes').insert({
             remetente_id: userIdNum, remetente_nome: 'Deposito Automatico',
-            destinatario_id: userIdNum, destinatario_nome: 'Deposito Automatico', valor: valorUsd
+            destinatario_id: userIdNum, destinatario_nome: 'Deposito Automatico', valor: valorKz
         });
 
         notificarSaldoUsuario(user.telefone, {
@@ -434,7 +498,6 @@ app.post('/depositos/validar', depositoUpload.single('comprovativo'), async (req
         res.json({
             success: true,
             novoSaldo,
-            valorUsd,
             valorKz,
             transferenciaId,
         });
@@ -449,8 +512,8 @@ app.post('/transferir', async (req, res) => {
   const { remetenteTelefone, destinoTelefone, valor } = req.body;
   const valorNum = parseFloat(valor);
 
-  if (!Number.isFinite(valorNum) || valorNum < 1) {
-    return res.status(400).json({ error: 'O valor minimo de transferencia e 1.00 USD.' });
+  if (!Number.isFinite(valorNum) || valorNum < 500) {
+    return res.status(400).json({ error: 'O valor minimo de transferencia e 500.00 KZ.' });
   }
 
   try {
@@ -477,8 +540,8 @@ app.post('/transferir', async (req, res) => {
 
     const remetenteNomeSeguro = normalizarTexto(remetente.nome_completo) || String(remetenteTelefone || '');
     const destinatarioNomeSeguro = normalizarTexto(destinatario.nome_completo) || String(destinoTelefone || '');
-    const msgDestinatario = `Recebeu um pagamento de ${valorNum.toFixed(2)} USD de ${remetenteNomeSeguro}.`;
-    const msgRemetente = `Fizeste uma transferencia de ${valorNum.toFixed(2)} USD para ${destinatarioNomeSeguro}.`;
+    const msgDestinatario = `Recebeu um pagamento de ${valorNum.toFixed(2)} KZ de ${remetenteNomeSeguro}.`;
+    const msgRemetente = `Fizeste uma transferencia de ${valorNum.toFixed(2)} KZ para ${destinatarioNomeSeguro}.`;
     enviarSMS(destinoTelefone, msgDestinatario);
     enviarSMS(remetenteTelefone, msgRemetente);
 
@@ -499,14 +562,14 @@ app.post('/levantamentos/solicitar', async (req, res) => {
     const { userId, valor, metodo, unitelTelefone, iban, beneficiarioNome } = req.body;
     const valorNumerico = parseFloat(valor);
     const metodoNormalizado = String(metodo || '').toLowerCase();
-    const VALOR_MINIMO_LEVANTAMENTO = 0.06;
+    const VALOR_MINIMO_LEVANTAMENTO = 200;
 
     if (!userId || !valorNumerico || valorNumerico <= 0 || !metodoNormalizado) {
         return res.status(400).json({ success: false, error: 'Dados de levantamento inválidos.' });
     }
 
     if (valorNumerico < VALOR_MINIMO_LEVANTAMENTO) {
-        return res.status(400).json({ success: false, error: 'O valor minimo para levantamento e 0.06 USD.' });
+        return res.status(400).json({ success: false, error: 'O valor minimo para levantamento e 200.00 KZ.' });
     }
 
     if (!['unitel_money', 'iban'].includes(metodoNormalizado)) { // Fix: Typo in 'método'
@@ -531,53 +594,35 @@ app.post('/levantamentos/solicitar', async (req, res) => {
         const { data: usuario, error: userErr } = await supabase.from('usuarios').select('*').eq('id', userId).single();
         if (userErr || !usuario) throw new Error('Usuário não encontrado.');
 
-        if (toNumberSafe(usuario.saldo_usd) < valorNumerico) {
-            throw new Error('Saldo insuficiente para solicitar levantamento.');
-        }
+        // Chamada da Função RPC para processar o saque de forma atômica
+        const { data: rpcData, error: rpcErr } = await supabase.rpc('solicitar_saque_v2', {
+            p_user_id: userId,
+            p_valor: valorNumerico,
+            p_metodo: metodoNormalizado,
+            p_unitel: unitelNormalizado,
+            p_iban: ibanNormalizado,
+            p_beneficiario: beneficiarioNormalizado,
+            p_user_nome: usuario.nome_completo,
+            p_user_telefone: usuario.telefone
+        });
 
-        const novoSaldo = arredondar2(toNumberSafe(usuario.saldo_usd) - valorNumerico);
-        const updateData = { saldo_usd: novoSaldo };
+        if (rpcErr) throw rpcErr;
+        if (!rpcData.success) throw new Error(rpcData.error);
 
-        if (metodoNormalizado === 'unitel_money') updateData.unitel_money = unitelNormalizado;
-        if (metodoNormalizado === 'iban') {
-            updateData.iban = ibanNormalizado;
-            updateData.beneficiario_nome = beneficiarioNormalizado;
-        }
-
-        const todosUsuariosResp = await supabase.from('usuarios').select('id,unitel_money,iban');
-        if (todosUsuariosResp.error) throw todosUsuariosResp.error;
-        const todosUsuarios = Array.isArray(todosUsuariosResp.data) ? todosUsuariosResp.data : [];
-
-        if (metodoNormalizado === 'unitel_money' && todosUsuarios.some((u) => Number(u.id) !== Number(userId) && assinaturaTelefone(u.unitel_money) === unitelNormalizado)) {
-            throw new Error('Numero Unitel Money já cadastrado em outra conta.');
-        }
-        if (metodoNormalizado === 'iban' && todosUsuarios.some((u) => Number(u.id) !== Number(userId) && normalizarDigitos(u.iban) === ibanNormalizado)) {
-            throw new Error('IBAN já cadastrado em outra conta.');
-        }
-
-        await supabase.from('usuarios').update(updateData).eq('id', userId);
-        const { data: levantamento, error: levErr } = await supabase.from('levantamentos').insert({
-            user_id: userId, user_nome: usuario.nome_completo, user_telefone: usuario.telefone,
-            metodo: metodoNormalizado, valor: valorNumerico, status: 'pendente',
-            unitel_telefone: metodoNormalizado === 'unitel_money' ? String(unitelTelefone) : null,
-            iban: metodoNormalizado === 'iban' ? String(iban) : null,
-            beneficiario_nome: metodoNormalizado === 'iban' ? String(beneficiarioNome).trim() : null
-        }).select().single();
-
-        if (levErr) throw levErr;
+        const novoSaldo = rpcData.novoSaldo;
 
         notificarSaldoUsuario(usuario.telefone, {
             novoSaldo,
-            mensagem: `Seu levantamento de $${valorNumerico.toFixed(2)} foi solicitado e está pendente.`
+            mensagem: `Seu levantamento de ${valorNumerico.toFixed(2)} KZ foi solicitado e está pendente.`
         });
 
         io.emit('atualizar-levantamentos', {
             userId: Number(userId),
-            levantamentoId: levantamento.id,
+            levantamentoId: rpcData.levantamentoId,
             status: 'pendente'
         });
 
-        res.json({ success: true, novoSaldo, levantamento });
+        res.json({ success: true, novoSaldo });
     } catch (e) {
         res.status(400).json({ success: false, error: e.message });
     }
@@ -638,7 +683,7 @@ app.post('/admin/levantamentos/:id/aprovar', async (req, res) => {
         const saldoAtual = toNumberSafe(user?.saldo_usd);
         notificarSaldoUsuario(levantamento.user_telefone, {
             novoSaldo: saldoAtual,
-            mensagem: `Seu levantamento de $${parseFloat(levantamento.valor).toFixed(2)} foi pago.`
+            mensagem: `Seu levantamento de ${parseFloat(levantamento.valor).toFixed(2)} KZ foi pago.`
         });
 
         io.emit('atualizar-levantamentos', {
@@ -696,7 +741,7 @@ app.post('/admin/levantamentos/:id/rejeitar', async (req, res) => {
 
         notificarSaldoUsuario(levantamento.user_telefone, {
             novoSaldo: novoSaldo,
-            mensagem: `Seu levantamento de $${parseFloat(levantamento.valor).toFixed(2)} foi rejeitado. O valor voltou para sua conta.`
+            mensagem: `Seu levantamento de ${parseFloat(levantamento.valor).toFixed(2)} KZ foi rejeitado. O valor voltou para sua conta.`
         });
 
         io.emit('atualizar-levantamentos', {
@@ -742,7 +787,7 @@ app.post('/admin/levantamentos/:id/eliminar', async (req, res) => {
 // --- OUTRAS ROTAS (LOGIN/CADASTRO/BUSCA) ---
 
 app.post('/auth/cadastro', async (req, res) => {
-    const { nome, telefone, senha } = req.body;
+    const { nome, telefone, senha, indicado_por } = req.body;
     
     try {
         const existente = await buscarUsuarioPorTelefone(telefone);
@@ -750,13 +795,17 @@ app.post('/auth/cadastro', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Este número já está registado' });
         }
 
-        // Sugestão: Adicionar Hash de senha aqui com bcrypt
-        const { data, error } = await supabase.from('usuarios').insert({
+        const payload = {
             nome_completo: normalizarTexto(nome),
             telefone: assinaturaTelefone(telefone),
             senha: String(senha).trim(),
-            saldo_usd: 0.06
-        }).select().single();
+            saldo_usd: 50.00
+        };
+
+        if (indicado_por) payload.indicado_por = parseInt(indicado_por);
+
+        // Sugestão: Adicionar Hash de senha aqui com bcrypt
+        const { data, error } = await supabase.from('usuarios').insert(payload).select().single();
 
         if (error) throw error;
         res.status(201).json({ success: true, usuario: data });
@@ -769,11 +818,51 @@ app.post('/auth/login', async (req, res) => {
     const { telefone, senha } = req.body;
 
     try {
-        const usuarios = await buscarUsuariosPorTelefone(telefone);
+        const usuarios = await buscarUsuariosPorTelefone(telefone, 'id, nome_completo, telefone, senha, saldo_usd, bloqueado');
         const user = usuarios.find(u => String(u.senha) === String(senha).trim());
-        if (user) res.json({ success: true, usuario: user });
-        else res.status(401).json({ error: 'Dados incorretos' });
-    } catch (err) { res.status(500).json({ error: 'Erro no servidor' }); }
+        
+        if (!user) return res.status(401).json({ error: 'Dados incorretos' });
+        if (user.bloqueado) return res.status(403).json({ error: 'Usuário bloqueado pelo suporte. Contacte o suporte +55 926240472' });
+
+        res.json({ success: true, usuario: user });
+    } catch (err) {
+        console.error("ERRO NO LOGIN:", err);
+        if (err.message && err.message.includes('column "bloqueado" does not exist')) {
+            res.status(500).json({ error: 'Erro crítico: A coluna "bloqueado" não existe no banco de dados.' });
+        } else {
+            res.status(500).json({ error: 'Erro interno no servidor. Verifique os logs.' });
+        }
+    }
+});
+
+app.post('/auth/alterar-senha', async (req, res) => {
+    const { userId, senhaAtual, novaSenha } = req.body;
+
+    if (!userId || !senhaAtual || !novaSenha) {
+        return res.status(400).json({ success: false, error: 'Todos os campos são obrigatórios.' });
+    }
+
+    try {
+        // Busca a senha atual do usuário no banco
+        const { data: user, error: fetchErr } = await supabase
+            .from('usuarios')
+            .select('id, senha')
+            .eq('id', userId)
+            .single();
+
+        if (fetchErr || !user) return res.status(404).json({ success: false, error: 'Usuário não encontrado.' });
+
+        // Verifica se a senha atual digitada bate com a do banco
+        if (String(user.senha) !== String(senhaAtual).trim()) {
+            return res.status(401).json({ success: false, error: 'A senha atual está incorreta.' });
+        }
+
+        // Atualiza para a nova senha
+        await supabase.from('usuarios').update({ senha: String(novaSenha).trim() }).eq('id', userId);
+        res.json({ success: true, mensagem: 'Senha alterada com sucesso!' });
+    } catch (e) {
+        res.status(500).json({ success: false, error: 'Erro interno ao alterar senha.' });
+    }
 });
 
 app.get('/config/suporte', async (req, res) => {
@@ -856,6 +945,62 @@ app.get('/admin/listar-usuarios', async (req, res) => {
     }
 });
 
+// ROTA DE ESTATÍSTICAS DE CONVITE
+app.get('/referrals/stats/:userId', async (req, res) => {
+    const uid = req.params.userId;
+    try {
+        // Total de pessoas convidadas
+        const { count } = await supabase
+            .from('usuarios')
+            .select('*', { count: 'exact', head: true })
+            .eq('indicado_por', uid);
+
+        // Total de bônus recebidos
+        const { data: bonusData } = await supabase
+            .from('transacoes')
+            .select('valor')
+            .eq('destinatario_id', uid)
+            .ilike('remetente_nome', '%Bônus de Convite%')
+            .eq('vinculado', false);
+
+        const totalBonus = (bonusData || []).reduce((sum, tx) => sum + toNumberSafe(tx.valor), 0);
+        res.json({ totalInvited: count || 0, totalBonus: arredondar2(totalBonus) });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// NOVA ROTA PARA VINCULAR BÔNUS AO SALDO
+app.post('/referrals/vincular', async (req, res) => {
+    const { userId } = req.body;
+    try {
+        // 1. Buscar bônus não vinculados
+        const { data: bonusPendentes } = await supabase
+            .from('transacoes')
+            .select('id, valor')
+            .eq('destinatario_id', userId)
+            .ilike('remetente_nome', '%Bônus de Convite%')
+            .eq('vinculado', false);
+
+        if (!bonusPendentes || bonusPendentes.length === 0) {
+            return res.status(400).json({ success: false, error: 'Não há bônus acumulados para vincular.' });
+        }
+
+        const totalParaVincular = bonusPendentes.reduce((sum, tx) => sum + toNumberSafe(tx.valor), 0);
+
+        // 2. Buscar usuário e atualizar saldo
+        const { data: user } = await supabase.from('usuarios').select('saldo_usd, telefone').eq('id', userId).single();
+        const novoSaldo = arredondar2(toNumberSafe(user.saldo_usd) + totalParaVincular);
+
+        await supabase.from('usuarios').update({ saldo_usd: novoSaldo }).eq('id', userId);
+
+        // 3. Marcar transações como vinculadas
+        const ids = bonusPendentes.map(b => b.id);
+        await supabase.from('transacoes').update({ vinculado: true }).in('id', ids);
+
+        notificarSaldoUsuario(user.telefone, { novoSaldo, mensagem: `Bônus de ${totalParaVincular.toFixed(2)} KZ vinculado ao seu saldo!` });
+        res.json({ success: true, novoSaldo });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/admin/usuario-mais-rico', async (req, res) => {
     try {
         const { data, error } = await supabase.from('usuarios').select('*').order('saldo_usd', { ascending: false }).limit(1).single();
@@ -872,7 +1017,7 @@ app.post('/admin/alterar-nome', async (req, res) => {
     const { userId, novoNome, senhaAdmin } = req.body;
     const userIdNum = parseInt(userId);
 
-    if (senhaAdmin !== '123') {
+    if (senhaAdmin !== ADMIN_PASSWORD) {
         return res.status(401).json({ success: false, error: 'Senha de administrador incorreta.' });
     }
 
@@ -898,7 +1043,7 @@ app.post('/admin/alterar-nome', async (req, res) => {
 app.post('/admin/alterar-senha', async (req, res) => {
     const { userId, novaSenha, senhaAdmin } = req.body;
 
-    if (senhaAdmin !== '123') {
+    if (senhaAdmin !== ADMIN_PASSWORD) {
         return res.status(401).json({ success: false, error: 'Senha de administrador incorreta.' });
     }
 
@@ -921,7 +1066,7 @@ app.post('/admin/alterar-dados-bancarios', async (req, res) => {
     const { userId, unitel_money, iban, beneficiario_nome, senhaAdmin } = req.body;
     const userIdNum = parseInt(userId);
 
-    if (senhaAdmin !== '123') {
+    if (senhaAdmin !== ADMIN_PASSWORD) {
         return res.status(401).json({ success: false, error: 'Senha de administrador incorreta.' });
     }
 
@@ -976,7 +1121,7 @@ app.post('/admin/limpar-dados-bancarios', async (req, res) => {
     const { userId, senhaAdmin } = req.body;
     const userIdNum = parseInt(userId);
 
-    if (senhaAdmin !== '123') {
+    if (senhaAdmin !== ADMIN_PASSWORD) {
         return res.status(401).json({ success: false, error: 'Senha de administrador incorreta.' });
     }
 
@@ -1000,7 +1145,7 @@ app.post('/admin/limpar-dados-bancarios', async (req, res) => {
 app.post('/admin/config/suporte', async (req, res) => {
     const { senhaAdmin, mensagem, ativo } = req.body;
 
-    if (senhaAdmin !== '123') {
+    if (senhaAdmin !== ADMIN_PASSWORD) {
         return res.status(401).json({ success: false, error: 'Senha de administrador incorreta.' });
     }
 
@@ -1038,15 +1183,20 @@ app.post('/admin/ajustar-saldo', async (req, res) => {
         const { error: updateErr } = await supabase.from('usuarios').update({ saldo_usd: novoSaldo }).eq('id', userId);
         if (updateErr) throw updateErr;
 
+        // Define um nome claro para o histórico dependendo da operação
+        const nomeOperacao = operacao === 'soma' ? 'Depósito pelo Suporte' : 'Ajuste de Saldo (Débito)';
+
         await supabase.from('transacoes').insert({
-            remetente_id: userId, remetente_nome: 'Sistema (Ajuste)',
-            destinatario_id: userId, destinatario_nome: 'Sistema (Ajuste)',
+            remetente_id: null, // Sistema não tem ID de usuário
+            remetente_nome: nomeOperacao,
+            destinatario_id: userId, 
+            destinatario_nome: user.nome_completo,
             valor: operacao === 'soma' ? valorNum : -valorNum
         });
 
         notificarSaldoUsuario(user.telefone, { 
             novoSaldo,
-            mensagem: `Administrador ${operacao === 'soma' ? 'adicionou' : 'removeu'} $${valorNum} na sua conta.`
+            mensagem: `Administrador ${operacao === 'soma' ? 'adicionou' : 'removeu'} ${valorNum} KZ na sua conta.`
         });
 
         res.json({ success: true, novoSaldo });
@@ -1068,7 +1218,7 @@ app.post('/admin/bonus-global', async (req, res) => {
             
             notificarSaldoUsuario(u.telefone, {
                 novoSaldo,
-                mensagem: `🎁 Você recebeu um bônus de $${valorNum}!`
+                mensagem: `🎁 Você recebeu um bônus de ${valorNum} KZ!`
             });
         }
 
@@ -1102,7 +1252,7 @@ app.post('/admin/eliminar-usuario', async (req, res) => {
     const { userId, senha } = req.body;
     
     // Verificar a senha admin (123)
-    if (senha !== '123') {
+    if (senha !== ADMIN_PASSWORD) {
         return res.status(401).json({ success: false, error: 'Senha de administrador incorreta.' });
     }
     
@@ -1261,6 +1411,12 @@ app.get('/meus-investimentos/:userId', async (req, res) => {
 // ROTA PARA CRIAR INVESTIMENTO
 app.post('/investir', async (req, res) => {
   const { userId, valor, taxa, dias } = req.body;
+  const valorNum = parseFloat(valor);
+
+  if (!Number.isFinite(valorNum) || valorNum < 50) {
+    return res.status(400).json({ error: 'O valor minimo para investimento e 50.00 KZ.' });
+  }
+
   const diasPlano = parseInt(dias);
   const taxaInformada = parseFloat(taxa);
   const planosPermitidos = {
@@ -1275,7 +1431,7 @@ app.post('/investir', async (req, res) => {
   }
 
   try {
-    const { data: user, error: userErr } = await supabase.from('usuarios').select('saldo_usd, telefone').eq('id', userId).single();
+    const { data: user, error: userErr } = await supabase.from('usuarios').select('id, saldo_usd, telefone, indicado_por').eq('id', userId).single();
     if (userErr || !user) throw new Error('Utilizador não encontrado');
 
     if (toNumberSafe(user.saldo_usd) < valor) throw new Error('Saldo insuficiente para investir');
@@ -1291,8 +1447,32 @@ app.post('/investir', async (req, res) => {
     });
 
     await supabase.from('transacoes').insert({
-        remetente_id: userId, remetente_nome: 'Sistema', destinatario_id: userId, destinatario_nome: 'Investimento', valor: -valor
+        remetente_id: userId, 
+        remetente_nome: 'Investimento', 
+        destinatario_id: null, 
+        destinatario_nome: 'Aplicação de Capital', 
+        valor: -valor
     });
+
+    // LÓGICA DE BÔNUS DE CONVITE (10%)
+    if (user.indicado_por) {
+        const bonus = arredondar2(valor * 0.10);
+        const { data: padrinho } = await supabase.from('usuarios').select('id, saldo_usd, telefone').eq('id', user.indicado_por).single();
+        
+        if (padrinho) {
+            // Registra a transação de bônus mas NÃO atualiza o saldo do padrinho ainda
+            await supabase.from('transacoes').insert({
+                remetente_id: userId, 
+                remetente_nome: 'Bônus de Convite',
+                destinatario_id: padrinho.id, 
+                destinatario_nome: 'Sistema', 
+                valor: bonus,
+                vinculado: false
+            });
+            
+            notificarSaldoUsuario(padrinho.telefone, { mensagem: `Acabou de acumular ${bonus.toFixed(2)} KZ em bônus de convite!` });
+        }
+    }
 
     notificarSaldoUsuario(user.telefone, { novoSaldo, mensagem: 'Novo investimento aplicado com sucesso.' });
     io.emit('atualizar-investimentos', { userId: Number(userId), acao: 'criado' });
@@ -1323,7 +1503,7 @@ app.post('/resgatar-investimento', async (req, res) => {
     });
     await supabase.from('investimentos').delete().eq('id', investmentId);
 
-    notificarSaldoUsuario(user.telefone, { novoSaldo, mensagem: `Investimento resgatado: $${parseFloat(inv.valor_retorno_usd).toFixed(2)} creditado.` });
+    notificarSaldoUsuario(user.telefone, { novoSaldo, mensagem: `Investimento resgatado: ${parseFloat(inv.valor_retorno_usd).toFixed(2)} KZ creditado.` });
     io.emit('atualizar-investimentos', { userId: Number(userId), investmentId: Number(investmentId), acao: 'resgatado' });
     
     res.json({ success: true, novoSaldo, valorRecebido: inv.valor_retorno_usd });
@@ -1355,7 +1535,7 @@ app.post('/admin/investimentos/:id/cancelar', async (req, res) => {
     });
     await supabase.from('investimentos').delete().eq('id', investimentoId);
 
-    notificarSaldoUsuario(inv.usuarios.telefone, { novoSaldo, mensagem: `Investimento cancelado pelo administrador. $${valorDevolvido.toFixed(2)} devolvido.` });
+    notificarSaldoUsuario(inv.usuarios.telefone, { novoSaldo, mensagem: `Investimento cancelado pelo administrador. ${valorDevolvido.toFixed(2)} KZ devolvido.` });
     io.emit('atualizar-investimentos', { userId: Number(inv.user_id), investmentId, acao: 'cancelado_admin' });
 
     res.json({ success: true, userId: Number(inv.user_id), novoSaldo, valorDevolvido });
